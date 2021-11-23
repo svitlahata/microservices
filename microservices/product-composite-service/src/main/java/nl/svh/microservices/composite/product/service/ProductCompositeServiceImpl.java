@@ -9,31 +9,94 @@ import nl.svh.microservices.api.core.product.Product;
 import nl.svh.microservices.api.core.recommendation.Recommendation;
 import nl.svh.microservices.api.core.review.Review;
 import nl.svh.microservices.util.http.ServiceUtil;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.RestController;
+import org.webjars.NotFoundException;
 
 import java.util.List;
 import java.util.stream.Collectors;
 
 @RestController
 public class ProductCompositeServiceImpl implements ProductCompositeService {
+    private static final Logger LOG = LoggerFactory.getLogger(ProductCompositeServiceImpl.class);
 
     private final ServiceUtil serviceUtil;
-    private final ProductCompositeIntegration productCompositeIntegration;
+    private ProductCompositeIntegration integration;
 
     @Autowired
-    public ProductCompositeServiceImpl(ServiceUtil serviceUtil,
-                                       ProductCompositeIntegration productCompositeIntegration) {
+    public ProductCompositeServiceImpl(
+            ServiceUtil serviceUtil, ProductCompositeIntegration integration) {
+
         this.serviceUtil = serviceUtil;
-        this.productCompositeIntegration = productCompositeIntegration;
+        this.integration = integration;
     }
 
     @Override
+    public void createProduct(ProductAggregate body) {
+
+        try {
+
+            LOG.debug("createCompositeProduct: creates a new composite entity for productId: {}", body.getProductId());
+
+            Product product = new Product(body.getProductId(), body.getName(), body.getWeight(), null);
+            integration.createProduct(product);
+
+            if (body.getRecommendations() != null) {
+                body.getRecommendations().forEach(r -> {
+                    Recommendation recommendation = new Recommendation(body.getProductId(), r.getRecommendationId(), r.getAuthor(), r.getRate(), r.getContent(), null);
+                    integration.createRecommendation(recommendation);
+                });
+            }
+
+            if (body.getReviews() != null) {
+                body.getReviews().forEach(r -> {
+                    Review review = new Review(body.getProductId(), r.getReviewId(), r.getAuthor(), r.getSubject(), r.getContent(), null);
+                    integration.createReview(review);
+                });
+            }
+
+            LOG.debug("createCompositeProduct: composite entities created for productId: {}", body.getProductId());
+
+        } catch (RuntimeException re) {
+            LOG.warn("createCompositeProduct failed", re);
+            throw re;
+        }
+    }
+
+
+    @Override
     public ProductAggregate getProduct(int productId) {
-        Product product = productCompositeIntegration.getProduct(productId);
-        List<Review> reviews = productCompositeIntegration.getReviews(productId);
-        List<Recommendation> recommendations = productCompositeIntegration.getRecommendations(productId);
+
+        LOG.debug("getCompositeProduct: lookup a product aggregate for productId: {}", productId);
+
+        Product product = integration.getProduct(productId);
+        if (product == null) {
+            throw new NotFoundException("No product found for productId: " + productId);
+        }
+
+        List<Recommendation> recommendations = integration.getRecommendations(productId);
+
+        List<Review> reviews = integration.getReviews(productId);
+
+        LOG.debug("getCompositeProduct: aggregate entity found for productId: {}", productId);
+
         return createProductAggregate(product, recommendations, reviews, serviceUtil.getServiceAddress());
+    }
+
+    @Override
+    public void deleteProduct(int productId) {
+
+        LOG.debug("deleteCompositeProduct: Deletes a product aggregate for productId: {}", productId);
+
+        integration.deleteProduct(productId);
+
+        integration.deleteRecommendations(productId);
+
+        integration.deleteReviews(productId);
+
+        LOG.debug("deleteCompositeProduct: aggregate entities deleted for productId: {}", productId);
     }
 
     private ProductAggregate createProductAggregate(
@@ -48,15 +111,15 @@ public class ProductCompositeServiceImpl implements ProductCompositeService {
         int weight = product.getWeight();
 
         // 2. Copy summary recommendation info, if available
-        List<RecommendationSummary> recommendationSummaries =
-                (recommendations == null) ? null : recommendations.stream()
-                        .map(r -> new RecommendationSummary(r.getRecommendationId(), r.getAuthor(), r.getRate()))
+        List<RecommendationSummary> recommendationSummaries = (recommendations == null) ? null :
+                recommendations.stream()
+                        .map(r -> new RecommendationSummary(r.getRecommendationId(), r.getAuthor(), r.getRate(), r.getContent()))
                         .collect(Collectors.toList());
 
         // 3. Copy summary review info, if available
-        List<ReviewSummary> reviewSummaries =
-                (reviews == null) ? null : reviews.stream()
-                        .map(r -> new ReviewSummary(r.getReviewId(), r.getAuthor(), r.getSubject()))
+        List<ReviewSummary> reviewSummaries = (reviews == null) ? null :
+                reviews.stream()
+                        .map(r -> new ReviewSummary(r.getReviewId(), r.getAuthor(), r.getSubject(), r.getContent()))
                         .collect(Collectors.toList());
 
         // 4. Create info regarding the involved microservices addresses

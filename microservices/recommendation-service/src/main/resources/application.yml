@@ -1,6 +1,26 @@
 server:
+  error:
+    include-message: always
   port: 7002
 logging:
   level:
     root: INFO
     nl.svh.microservices: DEBUG
+    org.springframework.data.mongo.core.MongoTemplate: DEBUG
+spring:
+  data:
+    mongodb:
+      auto-index-creation: true
+      host: localhost
+      port: 27017
+      database: recommendation-db
+---
+spring:
+  config:
+    activate:
+      on-profile: docker
+  data:
+    mongodb:
+      host: mongodb
+server:
+  port: 8080
