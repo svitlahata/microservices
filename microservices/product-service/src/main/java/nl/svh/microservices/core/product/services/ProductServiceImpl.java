@@ -13,59 +13,75 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.web.bind.annotation.RestController;
+import reactor.core.publisher.Mono;
+
+import static java.util.logging.Level.FINE;
 
 @RestController
 public class ProductServiceImpl implements ProductService {
 
     private static final Logger LOG = LoggerFactory.getLogger(ProductServiceImpl.class);
 
-    private final ProductRepository repository;
-    private final ProductMapper mapper;
     private final ServiceUtil serviceUtil;
 
+    private final ProductRepository repository;
+
+    private final ProductMapper mapper;
+
     @Autowired
-    public ProductServiceImpl(ProductRepository repository,
-                              ProductMapper mapper,
-                              ServiceUtil serviceUtil) {
+    public ProductServiceImpl(ProductRepository repository, ProductMapper mapper, ServiceUtil serviceUtil) {
         this.repository = repository;
         this.mapper = mapper;
         this.serviceUtil = serviceUtil;
     }
 
     @Override
-    public Product getProduct(int productId) {
-        LOG.debug("Product return the found product for productId={}", productId);
+    public Mono<Product> createProduct(Product body) {
+
+        if (body.getProductId() < 1) {
+            throw new InvalidInputException("Invalid productId: " + body.getProductId());
+        }
+
+        ProductEntity entity = mapper.apiToEntity(body);
+        Mono<Product> newEntity = repository.save(entity)
+                .log(LOG.getName(), FINE)
+                .onErrorMap(
+                        DuplicateKeyException.class,
+                        ex -> new InvalidInputException("Duplicate key, Product Id: " + body.getProductId()))
+                .map(e -> mapper.entityToApi(e));
+
+        return newEntity;
+    }
+
+    @Override
+    public Mono<Product> getProduct(int productId) {
 
         if (productId < 1) {
             throw new InvalidInputException("Invalid productId: " + productId);
         }
 
-        ProductEntity productEntity = repository.findByProductId(productId).orElseThrow(() -> new NotFoundException(
-                "No product found for " +
-                        "productId: " + productId));
+        LOG.info("Will get product info for id={}", productId);
 
-        Product product = mapper.entityToApi(productEntity);
-        product.setServiceAddress(serviceUtil.getServiceAddress());
-
-        return product;
+        return repository.findByProductId(productId)
+                .switchIfEmpty(Mono.error(new NotFoundException("No product found for productId: " + productId)))
+                .log(LOG.getName(), FINE)
+                .map(e -> mapper.entityToApi(e))
+                .map(e -> setServiceAddress(e));
     }
 
     @Override
-    public Product createProduct(Product product) {
-        try {
-            ProductEntity entity = mapper.apiToEntity(product);
-            ProductEntity newEntity = repository.save(entity);
+    public Mono<Void> deleteProduct(int productId) {
 
-            LOG.debug("createProduct: entity created for {}", product.getProductId());
-            return mapper.entityToApi(newEntity);
-        } catch (DuplicateKeyException exception) {
-            throw new InvalidInputException("Duplicate key, Product Id: " + product.getProductId());
+        if (productId < 1) {
+            throw new InvalidInputException("Invalid productId: " + productId);
         }
+
+        LOG.debug("deleteProduct: tries to delete an entity with productId: {}", productId);
+        return repository.findByProductId(productId).log(LOG.getName(), FINE).map(e -> repository.delete(e)).flatMap(e -> e);
     }
 
-    @Override
-    public void deleteProduct(int productId) {
-        LOG.debug("deleteProduct: tries to delete an entity with productId {}", productId);
-        repository.findByProductId(productId).ifPresent(e -> repository.delete(e));
+    private Product setServiceAddress(Product e) {
+        e.setServiceAddress(serviceUtil.getServiceAddress());
+        return e;
     }
 }

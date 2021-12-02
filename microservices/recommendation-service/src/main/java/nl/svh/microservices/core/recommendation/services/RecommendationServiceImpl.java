@@ -3,7 +3,6 @@ package nl.svh.microservices.core.recommendation.services;
 import nl.svh.microservices.api.core.recommendation.Recommendation;
 import nl.svh.microservices.api.core.recommendation.RecommendationService;
 import nl.svh.microservices.api.exception.InvalidInputException;
-import nl.svh.microservices.core.recommendation.persistence.RecommendationEntity;
 import nl.svh.microservices.core.recommendation.persistence.RecommendationRepository;
 import nl.svh.microservices.util.http.ServiceUtil;
 import org.slf4j.Logger;
@@ -11,8 +10,10 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.web.bind.annotation.RestController;
+import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
 
-import java.util.List;
+import java.util.logging.Level;
 
 @RestController
 public class RecommendationServiceImpl implements RecommendationService {
@@ -33,41 +34,51 @@ public class RecommendationServiceImpl implements RecommendationService {
     }
 
     @Override
-    public List<Recommendation> getRecommendations(int productId) {
+    public Flux<Recommendation> getRecommendations(int productId) {
         if (productId < 1) {
             LOGGER.error("Invalid productId: {}", productId);
             throw new InvalidInputException("Invalid productId: " + productId);
         }
-        List<RecommendationEntity> entityList = repository.findByProductId(productId);
-        List<Recommendation> list = mapper.entityListToApiList(entityList);
-        list.forEach(e -> e.setServiceAddress(serviceUtil.getServiceAddress()));
-
-        LOGGER.debug("getRecommendations: response size: {}", list.size());
-
-        return list;
+        LOGGER.info("Will get recommendations for product with id={}", productId);
+        return repository.findByProductId(productId)
+                .log(LOGGER.getName(), Level.FINE)
+                .map(mapper::entityToApi)
+                .map(this::setServiceAddress);
     }
 
     @Override
-    public Recommendation createRecommendation(Recommendation body) {
-        try {
-            RecommendationEntity entity = mapper.apiToEntity(body);
-            RecommendationEntity newEntity = repository.save(entity);
-
-            LOGGER.debug("createRecommendation: created a recommendation entity: {}/{}", body.getProductId(),
-                    body.getRecommendationId());
-            return mapper.entityToApi(newEntity);
-
-        } catch (DuplicateKeyException dke) {
-            throw new InvalidInputException("Duplicate key, Product Id: " + body.getProductId() + ", Recommendation " +
-                    "Id:" + body.getRecommendationId());
+    public Mono<Recommendation> createRecommendation(Recommendation body) {
+        if (body.getProductId() < 1) {
+            throw new InvalidInputException("Invalid productId: " + body.getProductId());
         }
+
+        return repository.save(
+                mapper.apiToEntity(body))
+                .onErrorMap(
+                        DuplicateKeyException.class,
+                        ex -> new InvalidInputException("Duplicate key, Product Id: " + body.getProductId() + "," +
+                                " Recommendation Id:" + body.getRecommendationId())
+                )
+                .log(LOGGER.getName(), Level.FINE)
+                .map(mapper::entityToApi)
+                .map(this::setServiceAddress);
+
     }
 
     @Override
-    public void deleteRecommendations(int productId) {
+    public Mono<Void> deleteRecommendations(int productId) {
+        if (productId < 1) {
+            throw new InvalidInputException("Invalid productId: " + productId);
+        }
+
         LOGGER.debug("deleteRecommendations: tries to delete recommendations for the product with productId: {}",
                 productId);
-        repository.deleteAll(repository.findByProductId(productId));
+        return repository.deleteAll(repository.findByProductId(productId));
+    }
+
+    private Recommendation setServiceAddress(Recommendation e) {
+        e.setServiceAddress(serviceUtil.getServiceAddress());
+        return e;
     }
 
 }
